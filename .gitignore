@@ -70,3 +70,6 @@ Testing/
 
 # macos
 *.DS_Store
+
+# excutable file
+timerwheel
