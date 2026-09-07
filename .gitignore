@@ -74,4 +74,6 @@ Testing/
 # excutable file
 timerwheel
 main
+cli
+svr
 
