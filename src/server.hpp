@@ -2,8 +2,10 @@
 #include <vector>
 #include <string>
 #include <functional>
+#include <unordered_map>
 #include <cstring>
 #include <cassert>
+#include <cstdlib>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -420,5 +422,89 @@ public:
             if(_close_cb) _close_cb();
         }
         if(_event_cb) _event_cb();
+    }
+};
+
+#define DEFAULT_EPOLLEVENTS 1024
+class Poller
+{
+private:
+    int _epfd;
+    struct epoll_event _evs[DEFAULT_EPOLLEVENTS];
+    std::unordered_map<int, Channel*> _channels;
+private:
+    void Update(Channel* channel, int op)
+    {
+        // int epoll_ctl(int epfd, int op, int fd, struct epoll_event* pev)
+        struct epoll_event ev;
+        ev.data.fd = channel->Fd();
+        ev.events = channel->Events();
+        int ret = epoll_ctl(_epfd, op, channel->Fd(), &ev);
+        if(ret < 0)
+        {
+            ERR_LOG("EPOLLCTL FAIL!!!");
+        }
+        return;
+    }
+    bool ChannelExists(Channel* channel)
+    {
+        auto it = _channels.find(channel->Fd());
+        if(it == _channels.end())
+        {
+            return false;
+        }
+        return true;
+    }
+public:
+    Poller()
+    {
+        _epfd = epoll_create(1);
+        if(_epfd < 0)
+        {
+            ERR_LOG("EPOLL CREATE FAIL!!!");
+            abort();
+        }
+        INFO_LOG("EPOLL CREATE SUCCESS");
+    }
+    void UpdateEvent(Channel* channel)
+    {
+        if(!ChannelExists(channel))
+        {
+            _channels[channel->Fd()] = channel;
+            Update(channel, EPOLL_CTL_ADD);
+        }
+        else{
+            Update(channel, EPOLL_CTL_MOD);
+        }
+    }
+    void RemoveEvent(Channel* channel)
+    {
+        if(ChannelExists(channel))
+        {
+            _channels.erase(channel->Fd());
+            Update(channel, EPOLL_CTL_DEL);
+        }
+    }
+    void Poll(std::vector<Channel*>& active)
+    {
+        // int epoll_wait(int epfd, struct epoll_event* evs, int maxevents, int timeout)
+        int nfds = epoll_wait(_epfd, _evs, DEFAULT_EPOLLEVENTS, -1);
+        if(nfds < 0)
+        {
+            if(errno == EINTR)
+            {
+                return;
+            }
+            ERR_LOG("EPOLLWAIT FAIL!!!");
+            abort();
+        }
+        for(int i = 0; i < nfds; i++)
+        {
+            int fd = _evs[i].data.fd;
+            auto it = _channels.find(fd);
+            assert(it != _channels.end());
+            it->second->SetREvents(_evs[i].events);
+            active.push_back(it->second);
+        }
     }
 };
