@@ -1,5 +1,7 @@
+#pragma once
 #include <vector>
 #include <string>
+#include <functional>
 #include <cstring>
 #include <cassert>
 #include <unistd.h>
@@ -7,6 +9,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <sys/epoll.h>
 
 #include "log.hpp"
 
@@ -325,5 +328,97 @@ public:
     {
         Close();
     }
+};
 
+using EventCb = std::function<void()>;
+class Channel
+{
+private:
+    int _fd;
+    uint32_t _events;
+    uint32_t _revents;
+    EventCb _read_cb;
+    EventCb _write_cb;
+    EventCb _error_cb;
+    EventCb _close_cb;
+    EventCb _event_cb;
+public:
+    Channel(int fd)
+        :_fd(fd)
+        ,_events(0)
+        ,_revents(0)
+    {}
+    int Fd() {return _fd;}
+    uint32_t Events() {return _events;}
+    void SetREvents(uint32_t events) {_revents = events;}
+
+    void SetReadCb(const EventCb& cb)
+    {
+        _read_cb = cb;
+    }
+    void SetWriteCb(const EventCb& cb)
+    {
+        _write_cb = cb;
+    }
+    void SetErrorCb(const EventCb& cb)
+    {
+        _error_cb = cb;
+    }
+    void SetCloseCb(const EventCb& cb)
+    {
+        _close_cb = cb;
+    }
+    void SetEventCb(const EventCb& cb)
+    {
+        _event_cb = cb;
+    }
+    bool MonitorRead()
+    {
+        return _events & EPOLLIN;
+    }
+    bool MonitorWrite()
+    {
+        return _events & EPOLLOUT;
+    }
+    void EnableRead()
+    {
+        _events |= EPOLLIN;
+    }
+    void EnableWrite()
+    {
+        _events |= EPOLLOUT;
+    }
+    void DisableRead()
+    {
+        _events &= ~EPOLLIN;
+    }
+    void DisableWrite()
+    {
+        _events &= ~EPOLLOUT;
+    }
+    void DisableAll()
+    {
+        _events = 0;
+    }
+    void Remove(){}
+    void HandleEvent()
+    {
+        if(_revents & (EPOLLIN | EPOLLRDHUP | EPOLLPRI))
+        {
+            if(_read_cb) _read_cb();
+        }
+        if(_revents & EPOLLOUT)
+        {
+            if(_write_cb) _write_cb();
+        }
+        else if(_revents & EPOLLERR)
+        {
+            if(_error_cb) _error_cb();
+        }
+        else if(_revents & EPOLLHUP)
+        {
+            if(_close_cb) _close_cb();
+        }
+        if(_event_cb) _event_cb();
+    }
 };
