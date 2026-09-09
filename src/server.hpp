@@ -332,11 +332,13 @@ public:
     }
 };
 
+class Poller;
 using EventCb = std::function<void()>;
 class Channel
 {
 private:
     int _fd;
+    Poller* _poller;
     uint32_t _events;
     uint32_t _revents;
     EventCb _read_cb;
@@ -345,8 +347,9 @@ private:
     EventCb _close_cb;
     EventCb _event_cb;
 public:
-    Channel(int fd)
+    Channel(Poller* poller, int fd)
         :_fd(fd)
+        ,_poller(poller)
         ,_events(0)
         ,_revents(0)
     {}
@@ -385,24 +388,30 @@ public:
     void EnableRead()
     {
         _events |= EPOLLIN;
+        Update();
     }
     void EnableWrite()
     {
         _events |= EPOLLOUT;
+        Update();
     }
     void DisableRead()
     {
         _events &= ~EPOLLIN;
+        Update();
     }
     void DisableWrite()
     {
         _events &= ~EPOLLOUT;
+        Update();
     }
     void DisableAll()
     {
         _events = 0;
+        Update();
     }
-    void Remove(){}
+    void Remove();
+    void Update();
     void HandleEvent()
     {
         if(_revents & (EPOLLIN | EPOLLRDHUP | EPOLLPRI))
@@ -508,3 +517,6 @@ public:
         }
     }
 };
+
+void Channel::Remove() {_poller->RemoveEvent(this);}
+void Channel::Update() {_poller->UpdateEvent(this);}
