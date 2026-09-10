@@ -3,6 +3,9 @@
 #include <string>
 #include <functional>
 #include <unordered_map>
+#include <memory>
+#include <thread>
+#include <mutex>
 #include <cstring>
 #include <cassert>
 #include <cstdlib>
@@ -12,6 +15,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 
 #include "log.hpp"
 
@@ -332,13 +336,13 @@ public:
     }
 };
 
-class Poller;
+class EventLoop;
 using EventCb = std::function<void()>;
 class Channel
 {
 private:
     int _fd;
-    Poller* _poller;
+    EventLoop* _loop;
     uint32_t _events;
     uint32_t _revents;
     EventCb _read_cb;
@@ -347,9 +351,9 @@ private:
     EventCb _close_cb;
     EventCb _event_cb;
 public:
-    Channel(Poller* poller, int fd)
+    Channel(EventLoop* loop, int fd)
         :_fd(fd)
-        ,_poller(poller)
+        ,_loop(loop)
         ,_events(0)
         ,_revents(0)
     {}
@@ -517,6 +521,113 @@ public:
         }
     }
 };
+using Functor = std::function<void()>;
+class EventLoop
+{
+private:
+    std::thread::id _threadid;
+    int _event_fd;
+    std::unique_ptr<Channel> _event_channel;
+    Poller _poller;
+    std::vector<Functor> _tasks;
+    std::mutex _mutex;
+private:
+    static int CreateEventFd()
+    {
+        // int eventfd(unsigned int val, int flags)
+        int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if(efd < 0)
+        {
+            ERR_LOG("CREATE EVENTFD FAIL!!!");
+            abort();
+        }
+        return efd;
+    }
+    void EventFdReadCb()
+    {
+        uint64_t res = 0;
+        int ret = read(_event_fd, &res, sizeof(res));
+        if(ret < 0)
+        {
+            if(errno == EAGAIN || errno == EINTR)
+            {
+                return;
+            }
+            ERR_LOG("EVENTFD READ FAIL!!!");
+            abort();
+        }
+    }
+    void WakeUpEventFd()
+    {
+        uint64_t val = 1;
+        int ret = write(_event_fd, &val, sizeof(val));
+        if(ret < 0)
+        {
+            if(errno == EINTR)
+            {
+                return;
+            }
+            ERR_LOG("EVENTFD WRITE FAIL!!!");
+            abort();
+        }
+    }
+    void RunAllTasks()
+    {
+        std::vector<Functor> local;
+        {
+            std::unique_lock<std::mutex> _lock(_mutex);
+            _tasks.swap(local);
+        }
+        for(auto& f : local)
+        {
+            f();
+        }
+    }
+public:
+    EventLoop()
+        :_threadid(std::this_thread::get_id())
+        ,_event_fd(CreateEventFd())
+        ,_event_channel(new Channel(this, _event_fd))
+    {
+        // _event_channel->SetReadCb(std::bind(&EventLoop::EventFdReadCb, this));
+        _event_channel->SetReadCb([this](){EventFdReadCb();});
+        _event_channel->EnableRead();
+    }
+    void Start()
+    {
+        // epoll
+        std::vector<Channel*> actives;
+        _poller.Poll(actives);
+        // excute active events
+        for(auto channel : actives)
+        {
+            channel->HandleEvent();
+        }
+        // excute all tasks
+        RunAllTasks();
+    }
+    bool IsInLoop()
+    {
+        return _threadid == std::this_thread::get_id();
+    }
+    void RunInLoop(const Functor& cb)
+    {
+        if(IsInLoop()) cb();
+        else{
+            PushInLoop(cb);
+        }
+    }
+    void PushInLoop(const Functor& cb)
+    {
+        {
+            std::unique_lock<std::mutex> _lock(_mutex);
+            _tasks.push_back(cb);
+        }
+        WakeUpEventFd();
+    }
+    void UpdateEvent(Channel* channel) {_poller.UpdateEvent(channel);}
+    void RemoveEvent(Channel* channel) {_poller.RemoveEvent(channel);}
+};
 
-void Channel::Remove() {_poller->RemoveEvent(this);}
-void Channel::Update() {_poller->UpdateEvent(this);}
+void Channel::Remove() {_loop->RemoveEvent(this);}
+void Channel::Update() {_loop->UpdateEvent(this);}
