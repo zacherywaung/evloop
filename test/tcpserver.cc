@@ -3,6 +3,7 @@
 
 void CloseCb(Channel* channel)
 {
+    DEBUG_LOG("close fd: %d", channel->Fd());
     channel->Remove(); // clean epoll and clear mp
     delete channel;
 }
@@ -34,9 +35,9 @@ void ErrorCb(Channel* channel)
 {
     CloseCb(channel);
 }
-void EvCb(Channel* channel)
+void EvCb(EventLoop* loop, Channel* channel, uint64_t id)
 {
-    std::cout << "test event callback" << std::endl;
+    loop->RefreshTask(id);
 }
 
 void Acceptor(EventLoop* loop, Channel* listen_channel)
@@ -45,16 +46,19 @@ void Acceptor(EventLoop* loop, Channel* listen_channel)
     int newfd = accept(fd, nullptr, nullptr);
     if(newfd < 0) return;
     Channel* conn_channel = new Channel(loop, newfd);
+    uint64_t taskid = rand() % 10000;
     conn_channel->SetReadCb(std::bind(ReadCb, conn_channel));
     conn_channel->SetWriteCb(std::bind(WriteCb, conn_channel));
     conn_channel->SetCloseCb(std::bind(CloseCb, conn_channel));
     conn_channel->SetErrorCb(std::bind(ErrorCb, conn_channel));
-    conn_channel->SetEventCb(std::bind(EvCb, conn_channel));
+    conn_channel->SetEventCb(std::bind(EvCb, loop, conn_channel, taskid));
+    loop->AddTask(taskid, 5, [conn_channel](){CloseCb(conn_channel);});
     conn_channel->EnableRead(); // add connection channel into poller map
 }
 
 int main()
 {
+    srand(time(nullptr));
     Socket svr_sock;
     svr_sock.CreateServer(8080, "0.0.0.0", false);
     EventLoop loop;

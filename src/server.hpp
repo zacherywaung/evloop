@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/timerfd.h>
 
 #include "log.hpp"
 
@@ -305,9 +306,9 @@ public:
         // socket, set nonblock, bind, listen, reuse address
         if(Create() == false) return false;
         if(isnonblock) SetNonBlock();
+        ReuseAddress();
         if(Bind(ip, port) == false) return false;
         if(Listen() == false) return false;
-        ReuseAddress();
         return true;
     }
     bool CreateClient(uint16_t port, const std::string& ip)
@@ -514,6 +515,7 @@ public:
         for(int i = 0; i < nfds; i++)
         {
             int fd = _evs[i].data.fd;
+            DEBUG_LOG("epoll ready fd=%d events=%u", fd, _evs[i].events);
             auto it = _channels.find(fd);
             assert(it != _channels.end());
             it->second->SetREvents(_evs[i].events);
@@ -521,6 +523,159 @@ public:
         }
     }
 };
+
+using TaskCb = std::function<void()>;
+using ReleaseCb = std::function<void()>;
+
+class Timertask
+{
+private:
+    uint64_t _taskid;
+    uint32_t _timeout;
+    bool _iscanceled;
+    TaskCb _tcb;
+    ReleaseCb _rcb;
+public:
+    Timertask(uint64_t id, uint32_t timeout, const TaskCb& tcb)
+        :_taskid(id)
+        ,_timeout(timeout)
+        ,_tcb(tcb)
+        ,_iscanceled(false)
+    {}
+    void SetRelease(const ReleaseCb& rcb)
+    {
+        _rcb = rcb;
+    }
+    uint32_t GetTimeout()
+    {
+        return _timeout;
+    }
+    void Cancel()
+    {
+        _iscanceled = true;
+    }
+    ~Timertask()
+    {
+        if(!_iscanceled) _tcb();
+        _rcb();
+    }
+};
+
+using PtrTask = std::shared_ptr<Timertask>;
+using WeakTask = std::weak_ptr<Timertask>;
+
+class TimerWheel
+{
+private:
+    int _tick;
+    int _capacity;
+    std::vector<std::vector<PtrTask>> _wheel;
+    std::unordered_map<uint64_t, WeakTask> _mp;
+
+    EventLoop* _loop;
+    int _timerfd;
+    std::unique_ptr<Channel> _timer_channel;
+private:
+    void RemoveTask(uint64_t id)
+    {
+        auto it = _mp.find(id);
+        if(it != _mp.end())
+        {
+            _mp.erase(it);
+        }
+    }
+    static int CreateTimerFd()
+    {
+        int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
+        if(timerfd < 0)
+        {
+            ERR_LOG("CREATE TIMERFD FAIL!!!");
+            abort();
+        }
+        struct itimerspec itime;
+        itime.it_value.tv_sec = 1;
+        itime.it_value.tv_nsec = 0;
+        itime.it_interval.tv_sec = 1;
+        itime.it_interval.tv_nsec = 0;
+        timerfd_settime(timerfd, 0, &itime, nullptr);
+        return timerfd;
+    }
+    void ReadTimeFd()
+    {
+        uint64_t times;
+        int ret = read(_timerfd, &times, sizeof(times));
+        if(ret < 0)
+        {
+            ERR_LOG("READTIMEFD FAIL!!!");
+            abort();
+        }
+    }
+    void Ontime()
+    {
+        ReadTimeFd();
+        Run();
+    }
+public:
+    TimerWheel(EventLoop* loop)
+        :_capacity(60)
+        ,_wheel(_capacity)
+        ,_tick(0)
+        ,_loop(loop)
+        ,_timerfd(CreateTimerFd())
+        ,_timer_channel(new Channel(loop, _timerfd))
+    {
+        DEBUG_LOG("timerfd = %d", _timerfd);
+        _timer_channel->SetReadCb([this](){Ontime();});
+        _timer_channel->EnableRead();
+    }
+    void AddTaskInLoop(uint64_t id, uint32_t timeout, const TaskCb& tcb)
+    {
+        PtrTask pt(new Timertask(id, timeout, tcb));
+        // pt->SetRelease(std::bind(&TimerWheel::RemoveTask, this, id));
+        pt->SetRelease([this, id](){RemoveTask(id);});
+        int pos = (_tick + timeout) % _capacity;
+        _wheel[pos].push_back(pt);
+        _mp[id] = WeakTask(pt);
+    }
+    void AddTask(uint64_t id, uint32_t timeout, const TaskCb& tcb);
+    void RefreshTaskInLoop(uint64_t id)
+    {
+        auto it = _mp.find(id);
+        if(it == _mp.end())
+            return;
+        PtrTask pt = it->second.lock();
+        int timeout = pt->GetTimeout();
+        int pos = (_tick + timeout) % _capacity;
+        _wheel[pos].push_back(pt);
+    }
+    void RefreshTask(uint64_t id);
+    void CancelInLoop(uint64_t id)
+    {
+        auto it = _mp.find(id);
+        if(it == _mp.end())
+            return;
+        PtrTask pt = it->second.lock();
+        pt->Cancel();
+    }
+    void Cancel(uint64_t id);
+    void Run()
+    {
+        _tick = (_tick + 1) % _capacity;
+        DEBUG_LOG("tick=%d slot_size=%zu", _tick, _wheel[_tick].size());
+        _wheel[_tick].clear();
+    }
+    bool HasTimerTask(uint64_t id)
+    {
+        auto it = _mp.find(id);
+        if(it == _mp.end())
+        {
+            return false;
+        }
+        return true;
+    }
+};
+
+
 using Functor = std::function<void()>;
 class EventLoop
 {
@@ -531,6 +686,7 @@ private:
     Poller _poller;
     std::vector<Functor> _tasks;
     std::mutex _mutex;
+    TimerWheel _wheel;
 private:
     static int CreateEventFd()
     {
@@ -588,6 +744,7 @@ public:
         :_threadid(std::this_thread::get_id())
         ,_event_fd(CreateEventFd())
         ,_event_channel(new Channel(this, _event_fd))
+        ,_wheel(this)
     {
         // _event_channel->SetReadCb(std::bind(&EventLoop::EventFdReadCb, this));
         _event_channel->SetReadCb([this](){EventFdReadCb();});
@@ -610,7 +767,7 @@ public:
     {
         return _threadid == std::this_thread::get_id();
     }
-    void RunInLoop(const Functor& cb)
+    void RunInLoop(const Functor& cb) // ensure callback is excuted in same thread
     {
         if(IsInLoop()) cb();
         else{
@@ -627,7 +784,37 @@ public:
     }
     void UpdateEvent(Channel* channel) {_poller.UpdateEvent(channel);}
     void RemoveEvent(Channel* channel) {_poller.RemoveEvent(channel);}
+    void AddTask(uint64_t id, uint32_t timeout, const TaskCb& tcb)
+    {
+        _wheel.AddTask(id, timeout, tcb);
+    }
+    void RefreshTask(uint64_t id)
+    {
+        _wheel.RefreshTask(id);
+    }
+    void Cancel(uint64_t id)
+    {
+        _wheel.Cancel(id);
+    }
+    bool HasTimerTask(uint64_t id)
+    {
+        return _wheel.HasTimerTask(id);
+    }
+
 };
 
 void Channel::Remove() {_loop->RemoveEvent(this);}
 void Channel::Update() {_loop->UpdateEvent(this);}
+
+void TimerWheel::AddTask(uint64_t id, uint32_t timeout, const TaskCb& tcb)
+{
+    _loop->RunInLoop([this, id, timeout, tcb](){AddTaskInLoop(id, timeout, tcb);});
+}
+void TimerWheel::RefreshTask(uint64_t id)
+{
+    _loop->RunInLoop([this, id](){RefreshTaskInLoop(id);});
+}
+void TimerWheel::Cancel(uint64_t id)
+{
+    _loop->RunInLoop([this, id](){CancelInLoop(id);});
+}
