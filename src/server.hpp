@@ -6,6 +6,7 @@
 #include <memory>
 #include <thread>
 #include <mutex>
+#include <any>
 #include <cstring>
 #include <cassert>
 #include <cstdlib>
@@ -257,7 +258,8 @@ public:
     {
         // ssize_t recv(int fd, void* buf, int len, int flag)
         ssize_t ret = recv(_sockfd, buf, len, flag);
-        if(ret <= 0)
+        if(ret == 0) return -2; // errcode -2 : peer close
+        if(ret < 0)
         {
             if(errno == EAGAIN || errno == EINTR)
             {
@@ -271,6 +273,7 @@ public:
     }
     ssize_t RecvNonBlock(void* buf, int len)
     {
+        if(len == 0) return 0;
         return Recv(buf, len, MSG_DONTWAIT);
     }
     ssize_t Send(const void* buf, int len, int flag = 0)
@@ -291,6 +294,7 @@ public:
     }
     ssize_t SendNonBlock(void* buf, int len)
     {
+        if(len == 0) return 0;
         return Send(buf, len, MSG_DONTWAIT);
     }
     void Close()
@@ -767,6 +771,10 @@ public:
     {
         return _threadid == std::this_thread::get_id();
     }
+    void AssertInLoop()
+    {
+        assert(_threadid == std::this_thread::get_id());
+    }
     void RunInLoop(const Functor& cb) // ensure callback is excuted in same thread
     {
         if(IsInLoop()) cb();
@@ -792,7 +800,7 @@ public:
     {
         _wheel.RefreshTask(id);
     }
-    void Cancel(uint64_t id)
+    void CancelTask(uint64_t id)
     {
         _wheel.Cancel(id);
     }
@@ -802,6 +810,233 @@ public:
     }
 
 };
+
+enum class ConnStatus
+{
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+    DISCONNECTING
+};
+using PtrConnection = std::shared_ptr<Connection>;
+class Connection
+{
+private:
+    uint64_t _conn_id; // connection id & inactive release task id
+    int _sockfd;
+    bool _enable_inactive_release;
+    EventLoop* _loop;
+    ConnStatus _stat;
+    Socket _socket;
+    Channel _channel;
+    Buffer _in_buffer;
+    Buffer _out_buffer;
+    std::any _context;
+
+    using ConnectedCb = std::function<void(Const PtrConnection&)>;
+    using MessageCb = std::function<void(Const PtrConnection&, Buffer*)>;
+    using CloseCb = std::function<void(Const PtrConnection&)>;
+    using AnyEventCb = std::function<void(Const PtrConnection&)>;
+    ConnectedCb _connected_cb;
+    MessageCb _msg_cb;
+    CloseCb _close_cb;
+    AnyEventCb _any_event_cb;
+    CloseCb _server_close_cb;
+private:
+    void HandleRead()
+    {
+        // 1. socket recv input and load into in_buffer
+        // (TO OPTIMIZE)current version: we are unsure size of input, so we use a temporary buffer store data
+        // to avoid increase too much extra space in inbuffer
+        char buffer[65536] = {0};
+        ssize_t ret = _socket.RecvNonBlock(&buffer, 65535);
+        if(ret == -2) return HandleClose(); // peer close
+        if(ret < 0) return ShutDownInLoop();
+        // 2. callback msgcb
+        _in_buffer.WriteAndMove(&buffer, ret);
+        if(_in_buffer.ReadableSize() > 0)
+        {
+            _msg_cb(shared_from_this(), &_in_buffer);
+        }
+    }
+    void HandleWrite()
+    {
+        // 1. socket send outbuffer data
+        ssize_t ret = _socket.SendNonBlock(_out_buffer.ReadPos(), _out_buffer.ReadableSize());
+        if(ret < 0) // send err, close connection
+        {
+            HandleClose();
+        }
+        _out_buffer.MoveWrite(ret);
+        // 2. check outbuffer empty
+        if(_out_buffer.ReadableSize() == 0)
+        {
+            _channel.DisableWrite(); // close write monitor
+            if(_stat == ConnStatus::DISCONNECTING)
+            {
+                Release();
+            }
+        }
+    }
+    void HandleClose()
+    {
+        // check inbuffer empty
+        if(_in_buffer.ReadableSize() > 0)
+        {
+            _msg_cb(shared_from_this(), &_in_buffer);
+        }
+        Release();
+    }
+    void HandleError()
+    {
+        HandleClose();
+    }
+    void HandleEvent()
+    {
+        // 1. refresh timertask
+        if(_enable_inactive_release) _loop->RefreshTask(_conn_id);
+        // 2. excute any event callback supplied by user
+        if(_any_event_cb) _any_event_cb(shared_from_this());
+    }
+    void EstablishInLoop()
+    {
+        // 1. change status
+        assert(_stat == ConnStatus::CONNECTING);
+        _stat = ConnStatus::CONNECTED;
+        // 2. enable read
+        _channel.EnableRead();
+        // 3. use initial callback
+        if(_connected_cb) _connected_cb(shared_from_this());
+    }
+    void ReleaseInLoop()
+    {
+        // 1. change status
+        _stat = ConnStatus::DISCONNECTED;
+        // 2. remove event monitor
+        _channel.Remove();
+        // 3. close sockfd
+        _socket.Close();
+        // 4. remove release timer task
+        if(_loop->HasTimerTask(_conn_id)) CancelInactiveReleaseInLoop();
+        // 5. use close callback(user & server)
+        if(_close_cb) _close_cb(shared_from_this());
+        if(_server_close_cb) _server_close_cb(shared_from_this());
+    }
+    void SendInLoop(Buffer& buf)
+    {
+        // 1. check status
+        if(_stat == ConnStatus::DISCONNECTED) return;
+        // 2. load data into outbuffer
+        _out_buffer.WriteAndMoveBuffer(buf);
+        // 3. enable wirte
+        if(_channel.MonitorWrite() == false) _channel.EnableWrite();
+    }
+    void ShutDownInLoop()
+    {
+        // 1. change status
+        _stat = ConnStatus::DISCONNECTING;
+        // 2. check inbuffer
+        if(_in_buffer.ReadableSize() > 0)
+        {
+            _msg_cb(shared_from_this(), &_in_buffer);
+        }
+        // 3. checkoutbuffer
+        if(_out_buffer.ReadableSize() > 0)
+        {
+            if(_channel.MonitorWrite() == false) _channel.EnableWrite();
+        }
+        if(_out_buffer.ReadableSize() == 0) Release();
+    }
+    void RegisterInactiveReleaseInLoop(int sec)
+    {
+        _enable_inactive_release = true;
+        if(_loop->HasTimerTask(_conn_id))
+        {
+            _loop->RefreshTask(_conn_id);
+        }
+        _loop->AddTask(_conn_id, sec, [this](){Release();});
+    }
+    void CancelInactiveReleaseInLoop()
+    {
+        _enable_inactive_release = false;
+        if(_loop->HasTimerTask(_conn_id))
+        {
+            _loop->CancelTask(_conn_id);
+        }
+    }
+    void UpgradeProtocolInLoop(const std::any& context, const ConnectedCb& connected_cb, 
+        const MessageCb& msg_cb, const CloseCb& close_cb, const AnyEventCb& any_event_cb;)
+    {
+        _context = context;
+        _connected_cb = connected_cb;
+        _msg_cb = msg_cb;
+        _close_cb = close_cb;
+        _any_event_cb = any_event_cb;
+    }
+public:
+    Connection(uint64_t id, int sockfd, EventLoop* loop)
+        :_conn_id(id)
+        ,_sockfd(sockfd)
+        ,_enable_inactive_release(false)
+        ,_loop(loop)
+        ,_stat(ConnStatus::CONNECTING)
+        ,_socket(_sockfd)
+        ,_channel(_loop, _sockfd)
+    {
+        _channel.SetReadCb([this](){HandleRead();});
+        _channel.SetWriteCb([this](){HandleWrite();});
+        _channel.SetErrorCb([this](){HandleError();});
+        _channel.SetCloseCb([this](){HandleClose();});
+        _channel.SetEventCb([this](){HandleEvent();});
+    }
+    int Fd() {return _sockfd;}
+    uint64_t Id() {return _conn_id;}
+    bool IsConnected() {return _stat == ConnStatus::CONNECTED;}
+    void SetContext(const std::any& context) {_context = context;}
+    std::any* GetContext() {return &_context;}
+    void SetConnectedCb(const ConnectedCb& cb) {_connected_cb = cb;}
+    void SetMessageCb(const MessageCb& cb) {_msg_cb = cb;}
+    void SetCloseCb(const CloseCb& cb) {_close_cb = cb;}
+    void SetAnyEventCb(const AnyEventCb& cb) {_any_event_cb = cb;}
+    void SetServerCloseCb(const CloseCb& cb) {_server_close_cb = cb;}
+    void Established()
+    {
+        _loop->RunInLoop([this](){EstablishInLoop();});
+    }
+    void Send(const char* buf, size_t len)
+    {
+        Buffer buffer;
+        buffer.WriteAndMove(buf, len);
+        _loop->RunInLoop([this](){SendInLoop(std::move(buffer))});
+    }
+    void ShutDown()
+    {
+        _loop->RunInLoop([this](){ShutDownInLoop();});
+    }
+    void Release()
+    {
+        _loop->RunInLoop([this](){ReleaseInLoop();});
+    }
+    void RegisterInactiveRelease()
+    {
+        _loop->RunInLoop([this](){RegisterInactiveReleaseInLoop();});
+    }
+    void CancelInactiveRelease()
+    {
+        _loop->RunInLoop([this](){CancelInactiveReleaseInLoop();});
+    }
+    void UpgradeProtocol(const std::any& context, const ConnectedCb& connected_cb, 
+        const MessageCb& msg_cb, const CloseCb& close_cb, const AnyEventCb& any_event_cb;)
+    {
+        _loop->AssertInLoop(); // make sure protocol upgrade be excuted in loop and immediately
+        _loop->RunInLoop([this](){UpgradeProtocolInLoop(context, connected_cb, msg_cb, close_cb, any_event_cb);});
+    }
+    ~Connection()
+    {
+        DEBUG_LOG("Connection Release: %p", this);
+    }
+};
+
 
 void Channel::Remove() {_loop->RemoveEvent(this);}
 void Channel::Update() {_loop->UpdateEvent(this);}
