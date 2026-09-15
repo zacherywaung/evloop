@@ -648,6 +648,7 @@ public:
         if(it == _mp.end())
             return;
         PtrTask pt = it->second.lock();
+        if(!pt) return;
         int timeout = pt->GetTimeout();
         int pos = (_tick + timeout) % _capacity;
         _wheel[pos].push_back(pt);
@@ -659,6 +660,7 @@ public:
         if(it == _mp.end())
             return;
         PtrTask pt = it->second.lock();
+        if(!pt) return;
         pt->Cancel();
     }
     void Cancel(uint64_t id);
@@ -818,8 +820,9 @@ enum class ConnStatus
     CONNECTED,
     DISCONNECTING
 };
+class Connection;
 using PtrConnection = std::shared_ptr<Connection>;
-class Connection
+class Connection : public std::enable_shared_from_this<Connection>
 {
 private:
     uint64_t _conn_id; // connection id & inactive release task id
@@ -833,10 +836,10 @@ private:
     Buffer _out_buffer;
     std::any _context;
 
-    using ConnectedCb = std::function<void(Const PtrConnection&)>;
-    using MessageCb = std::function<void(Const PtrConnection&, Buffer*)>;
-    using CloseCb = std::function<void(Const PtrConnection&)>;
-    using AnyEventCb = std::function<void(Const PtrConnection&)>;
+    using ConnectedCb = std::function<void(const PtrConnection&)>;
+    using MessageCb = std::function<void(const PtrConnection&, Buffer*)>;
+    using CloseCb = std::function<void(const PtrConnection&)>;
+    using AnyEventCb = std::function<void(const PtrConnection&)>;
     ConnectedCb _connected_cb;
     MessageCb _msg_cb;
     CloseCb _close_cb;
@@ -867,7 +870,7 @@ private:
         {
             HandleClose();
         }
-        _out_buffer.MoveWrite(ret);
+        _out_buffer.MoveRead(ret);
         // 2. check outbuffer empty
         if(_out_buffer.ReadableSize() == 0)
         {
@@ -954,7 +957,9 @@ private:
         {
             _loop->RefreshTask(_conn_id);
         }
-        _loop->AddTask(_conn_id, sec, [this](){Release();});
+        else{
+            _loop->AddTask(_conn_id, sec, [this](){Release();});
+        }
     }
     void CancelInactiveReleaseInLoop()
     {
@@ -965,7 +970,7 @@ private:
         }
     }
     void UpgradeProtocolInLoop(const std::any& context, const ConnectedCb& connected_cb, 
-        const MessageCb& msg_cb, const CloseCb& close_cb, const AnyEventCb& any_event_cb;)
+        const MessageCb& msg_cb, const CloseCb& close_cb, const AnyEventCb& any_event_cb)
     {
         _context = context;
         _connected_cb = connected_cb;
@@ -1007,7 +1012,7 @@ public:
     {
         Buffer buffer;
         buffer.WriteAndMove(buf, len);
-        _loop->RunInLoop([this](){SendInLoop(std::move(buffer))});
+        _loop->RunInLoop([this, b = std::move(buffer)]()mutable{SendInLoop(b);});
     }
     void ShutDown()
     {
@@ -1017,19 +1022,20 @@ public:
     {
         _loop->RunInLoop([this](){ReleaseInLoop();});
     }
-    void RegisterInactiveRelease()
+    void RegisterInactiveRelease(int sec)
     {
-        _loop->RunInLoop([this](){RegisterInactiveReleaseInLoop();});
+        _loop->RunInLoop([this, sec](){RegisterInactiveReleaseInLoop(sec);});
     }
     void CancelInactiveRelease()
     {
         _loop->RunInLoop([this](){CancelInactiveReleaseInLoop();});
     }
     void UpgradeProtocol(const std::any& context, const ConnectedCb& connected_cb, 
-        const MessageCb& msg_cb, const CloseCb& close_cb, const AnyEventCb& any_event_cb;)
+        const MessageCb& msg_cb, const CloseCb& close_cb, const AnyEventCb& any_event_cb)
     {
         _loop->AssertInLoop(); // make sure protocol upgrade be excuted in loop and immediately
-        _loop->RunInLoop([this](){UpgradeProtocolInLoop(context, connected_cb, msg_cb, close_cb, any_event_cb);});
+        // _loop->RunInLoop([this](){UpgradeProtocolInLoop(context, connected_cb, msg_cb, close_cb, any_event_cb);});
+        _loop->RunInLoop(std::bind(&Connection::UpgradeProtocolInLoop, this, context, connected_cb, msg_cb, close_cb, any_event_cb));
     }
     ~Connection()
     {

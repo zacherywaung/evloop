@@ -1,43 +1,24 @@
 #include "../src/server.hpp"
 #include <iostream>
+#include <unordered_map>
 
-void CloseCb(Channel* channel)
-{
-    DEBUG_LOG("close fd: %d", channel->Fd());
-    channel->Remove(); // clean epoll and clear mp
-    delete channel;
-}
+uint64_t conn_id = 0;
+std::unordered_map<uint64_t, PtrConnection> _conns;
 
-void ReadCb(Channel* channel)
+void ConnectionDestroy(const PtrConnection& conn)
 {
-    int fd = channel->Fd();
-    char buffer[1024] = {0};
-    int ret = recv(fd, buffer, 1023, 0);
-    if(ret < 0)
-    {
-        CloseCb(channel);
-    }
-    std::cout << buffer << std::endl;
-    channel->EnableWrite();
+    _conns.erase(conn->Id());
 }
-void WriteCb(Channel* channel)
+void OnConnected(const PtrConnection& conn)
 {
-    int fd = channel->Fd();
-    std::string tmp = "test for writecallback";
-    int ret = send(fd, tmp.c_str(), tmp.size(), 0);
-    if(ret < 0)
-    {
-        CloseCb(channel);
-    }
-    channel->DisableWrite();
+    DEBUG_LOG("new connection: %p", conn.get());
 }
-void ErrorCb(Channel* channel)
+void OnMessage(const PtrConnection& conn, Buffer* buf)
 {
-    CloseCb(channel);
-}
-void EvCb(EventLoop* loop, Channel* channel, uint64_t id)
-{
-    loop->RefreshTask(id);
+    std::string msg = buf->ReadAsStringAndMove(buf->ReadableSize());
+    DEBUG_LOG("%s", msg.c_str());
+    std::string s = "hello";
+    conn->Send(s.c_str(), s.size());
 }
 
 void Acceptor(EventLoop* loop, Channel* listen_channel)
@@ -45,15 +26,14 @@ void Acceptor(EventLoop* loop, Channel* listen_channel)
     int fd = listen_channel->Fd();
     int newfd = accept(fd, nullptr, nullptr);
     if(newfd < 0) return;
-    Channel* conn_channel = new Channel(loop, newfd);
-    uint64_t taskid = rand() % 10000;
-    conn_channel->SetReadCb(std::bind(ReadCb, conn_channel));
-    conn_channel->SetWriteCb(std::bind(WriteCb, conn_channel));
-    conn_channel->SetCloseCb(std::bind(CloseCb, conn_channel));
-    conn_channel->SetErrorCb(std::bind(ErrorCb, conn_channel));
-    conn_channel->SetEventCb(std::bind(EvCb, loop, conn_channel, taskid));
-    loop->AddTask(taskid, 5, [conn_channel](){CloseCb(conn_channel);});
-    conn_channel->EnableRead(); // add connection channel into poller map
+    conn_id++;
+    PtrConnection conn(new Connection(conn_id, newfd, loop));
+    conn->SetMessageCb(std::bind(OnMessage, std::placeholders::_1, std::placeholders::_2));
+    conn->SetConnectedCb(std::bind(OnConnected, std::placeholders::_1));
+    conn->SetServerCloseCb(std::bind(ConnectionDestroy, std::placeholders::_1));
+    conn->RegisterInactiveRelease(10);
+    conn->Established();
+    _conns[conn->Id()] = conn;
 }
 
 int main()
