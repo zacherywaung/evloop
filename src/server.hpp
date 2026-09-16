@@ -1043,6 +1043,34 @@ public:
     }
 };
 
+using AcceptCb = std::function<void(int)>;
+class Acceptor
+{
+private:
+    Socket _socket;
+    std::unique_ptr<Channel> _channel;
+    EventLoop* _loop;
+    AcceptCb _accept_cb;
+private:
+    void HandleRead()
+    {
+        int newfd = _socket.Accept();
+        if(newfd < 0) return;
+        if(_accept_cb) _accept_cb(newfd);
+    }
+public:
+    Acceptor(int port, EventLoop* loop)
+        :_loop(loop)
+    {
+        bool ret = _socket.CreateServer(port);
+        assert(ret);
+        _channel.reset(new Channel(_loop, _socket.Fd()));
+        _channel->SetReadCb([this](){HandleRead();});
+    }
+    void SetAcceptCb(const AcceptCb& cb) {_accept_cb = cb;}
+    void StartListen() {_channel->EnableRead();}
+};
+
 
 void Channel::Remove() {_loop->RemoveEvent(this);}
 void Channel::Update() {_loop->UpdateEvent(this);}

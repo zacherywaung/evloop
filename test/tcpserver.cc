@@ -4,6 +4,7 @@
 
 uint64_t conn_id = 0;
 std::unordered_map<uint64_t, PtrConnection> _conns;
+EventLoop loop;
 
 void ConnectionDestroy(const PtrConnection& conn)
 {
@@ -21,13 +22,10 @@ void OnMessage(const PtrConnection& conn, Buffer* buf)
     conn->Send(s.c_str(), s.size());
 }
 
-void Acceptor(EventLoop* loop, Channel* listen_channel)
+void NewConnection(int newfd)
 {
-    int fd = listen_channel->Fd();
-    int newfd = accept(fd, nullptr, nullptr);
-    if(newfd < 0) return;
     conn_id++;
-    PtrConnection conn(new Connection(conn_id, newfd, loop));
+    PtrConnection conn(new Connection(conn_id, newfd, &loop));
     conn->SetMessageCb(std::bind(OnMessage, std::placeholders::_1, std::placeholders::_2));
     conn->SetConnectedCb(std::bind(OnConnected, std::placeholders::_1));
     conn->SetServerCloseCb(std::bind(ConnectionDestroy, std::placeholders::_1));
@@ -39,12 +37,9 @@ void Acceptor(EventLoop* loop, Channel* listen_channel)
 int main()
 {
     srand(time(nullptr));
-    Socket svr_sock;
-    svr_sock.CreateServer(8080, "0.0.0.0", false);
-    EventLoop loop;
-    Channel listen_channel(&loop, svr_sock.Fd());
-    listen_channel.SetReadCb(std::bind(Acceptor, &loop, &listen_channel));
-    listen_channel.EnableRead();
+    Acceptor acceptor(8080, &loop);
+    acceptor.SetAcceptCb(std::bind(NewConnection, std::placeholders::_1));
+    acceptor.StartListen();
     while(1)
     {
         loop.Start();
