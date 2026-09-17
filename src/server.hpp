@@ -758,16 +758,19 @@ public:
     }
     void Start()
     {
-        // epoll
-        std::vector<Channel*> actives;
-        _poller.Poll(actives);
-        // excute active events
-        for(auto channel : actives)
+        while(1)
         {
-            channel->HandleEvent();
+            // epoll
+            std::vector<Channel*> actives;
+            _poller.Poll(actives);
+            // excute active events
+            for(auto channel : actives)
+            {
+                channel->HandleEvent();
+            }
+            // excute all tasks
+            RunAllTasks();
         }
-        // excute all tasks
-        RunAllTasks();
     }
     bool IsInLoop()
     {
@@ -811,6 +814,42 @@ public:
         return _wheel.HasTimerTask(id);
     }
 
+};
+
+
+class LoopThread
+{
+private:
+    std::mutex _mutex;
+    std::condition_variable _cond;
+    EventLoop* _loop;
+    std::thread _thread;
+private:
+    void ThreadEntry()
+    {
+        EventLoop loop;
+        {
+            std::unique_lock<std::mutex> lock(_mutex);
+            _loop = &loop;
+            _cond.notify_all();
+        }
+        _loop->Start();
+    }
+public:
+    LoopThread()
+        :_loop(nullptr)
+        ,_thread(&LoopThread::ThreadEntry, this)
+    {}
+    EventLoop* Getloop()
+    {
+        EventLoop* ret = nullptr;
+        {
+            std::unique_lock<std::mutex> lock(_mutex);
+            _cond.wait(lock, [&](){ return _loop != nullptr;});
+            ret = _loop;
+        }
+        return ret;
+    }
 };
 
 enum class ConnStatus
