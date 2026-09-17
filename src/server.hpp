@@ -6,6 +6,7 @@
 #include <memory>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <any>
 #include <cstring>
 #include <cassert>
@@ -840,7 +841,7 @@ public:
         :_loop(nullptr)
         ,_thread(&LoopThread::ThreadEntry, this)
     {}
-    EventLoop* Getloop()
+    EventLoop* GetLoop()
     {
         EventLoop* ret = nullptr;
         {
@@ -849,6 +850,45 @@ public:
             ret = _loop;
         }
         return ret;
+    }
+};
+
+class LoopThreadPool
+{
+private:
+    int _thread_cnt;
+    int _next_idx;
+    EventLoop* _baseloop;
+    std::vector<LoopThread*> _threads;
+    std::vector<EventLoop*> _loops;
+public:
+    LoopThreadPool(EventLoop* baseloop)
+        :_thread_cnt(0)
+        ,_next_idx(0)
+        ,_baseloop(baseloop)
+    {}
+    void SetThreadCnt(int cnt)
+    {
+        _thread_cnt = cnt;
+    }
+    void CreateLoops()
+    {
+        if(_thread_cnt > 0)
+        {
+            _threads.resize(_thread_cnt);
+            _loops.resize(_thread_cnt);
+            for(int i = 0; i < _thread_cnt; i++)
+            {
+                _threads[i] = new LoopThread();
+                _loops[i] = _threads[i]->GetLoop();
+            }
+        }
+    }
+    EventLoop* NextLoop()
+    {
+        if(_thread_cnt == 0) return _baseloop;
+        _next_idx = (_next_idx + 1) % _thread_cnt;
+        return _loops[_next_idx];
     }
 };
 

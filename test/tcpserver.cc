@@ -5,6 +5,7 @@
 uint64_t conn_id = 0;
 std::unordered_map<uint64_t, PtrConnection> _conns;
 EventLoop loop;
+LoopThreadPool* pool = nullptr;
 
 void ConnectionDestroy(const PtrConnection& conn)
 {
@@ -25,7 +26,7 @@ void OnMessage(const PtrConnection& conn, Buffer* buf)
 void NewConnection(int newfd)
 {
     conn_id++;
-    PtrConnection conn(new Connection(conn_id, newfd, &loop));
+    PtrConnection conn(new Connection(conn_id, newfd, pool->NextLoop()));
     conn->SetMessageCb(std::bind(OnMessage, std::placeholders::_1, std::placeholders::_2));
     conn->SetConnectedCb(std::bind(OnConnected, std::placeholders::_1));
     conn->SetServerCloseCb(std::bind(ConnectionDestroy, std::placeholders::_1));
@@ -36,13 +37,12 @@ void NewConnection(int newfd)
 
 int main()
 {
-    srand(time(nullptr));
+    pool = new LoopThreadPool(&loop);
+    pool->SetThreadCnt(2);
+    pool->CreateLoops();
     Acceptor acceptor(8080, &loop);
     acceptor.SetAcceptCb(std::bind(NewConnection, std::placeholders::_1));
     acceptor.StartListen();
-    while(1)
-    {
-        loop.Start();
-    }
+    loop.Start();
     return 0;
 }
