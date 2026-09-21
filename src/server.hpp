@@ -13,6 +13,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -948,7 +949,10 @@ private:
         ssize_t ret = _socket.SendNonBlock(_out_buffer.ReadPos(), _out_buffer.ReadableSize());
         if(ret < 0) // send err, close connection
         {
-            HandleClose();
+            if (_in_buffer.ReadableSize() > 0) {
+                _msg_cb(shared_from_this(), &_in_buffer);
+            }
+            return Release();
         }
         _out_buffer.MoveRead(ret);
         // 2. check outbuffer empty
@@ -1100,7 +1104,7 @@ public:
     }
     void Release()
     {
-        _loop->RunInLoop([this](){ReleaseInLoop();});
+        _loop->PushInLoop(std::bind(&Connection::ReleaseInLoop, shared_from_this()));
     }
     void RegisterInactiveRelease(int sec)
     {
@@ -1257,7 +1261,11 @@ void TimerWheel::Cancel(uint64_t id)
     _loop->RunInLoop([this, id](){CancelInLoop(id);});
 }
 
-
+class NetWork {
+public:
+    NetWork() { signal(SIGPIPE, SIG_IGN); }
+};
+static NetWork nw;
 
 
 #endif
