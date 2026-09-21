@@ -1,4 +1,5 @@
-#pragma once
+#ifndef __M_SERVER_HPP__
+#define __M_SERVER_HPP__
 #include <vector>
 #include <string>
 #include <functional>
@@ -520,7 +521,7 @@ public:
         for(int i = 0; i < nfds; i++)
         {
             int fd = _evs[i].data.fd;
-            DEBUG_LOG("epoll ready fd=%d events=%u", fd, _evs[i].events);
+            // DEBUG_LOG("epoll ready fd=%d events=%u", fd, _evs[i].events);
             auto it = _channels.find(fd);
             assert(it != _channels.end());
             it->second->SetREvents(_evs[i].events);
@@ -629,7 +630,7 @@ public:
         ,_timerfd(CreateTimerFd())
         ,_timer_channel(new Channel(loop, _timerfd))
     {
-        DEBUG_LOG("timerfd = %d", _timerfd);
+        // DEBUG_LOG("timerfd = %d", _timerfd);
         _timer_channel->SetReadCb([this](){Ontime();});
         _timer_channel->EnableRead();
     }
@@ -668,7 +669,7 @@ public:
     void Run()
     {
         _tick = (_tick + 1) % _capacity;
-        DEBUG_LOG("tick=%d slot_size=%zu", _tick, _wheel[_tick].size());
+        // DEBUG_LOG("tick=%d slot_size=%zu", _tick, _wheel[_tick].size());
         _wheel[_tick].clear();
     }
     bool HasTimerTask(uint64_t id)
@@ -1255,3 +1256,8 @@ void TimerWheel::Cancel(uint64_t id)
 {
     _loop->RunInLoop([this, id](){CancelInLoop(id);});
 }
+
+
+
+
+#endif
