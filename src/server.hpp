@@ -1150,6 +1150,95 @@ public:
     void StartListen() {_channel->EnableRead();}
 };
 
+class TcpServer
+{
+private:
+    uint64_t _next_id;
+    int _port;
+    int _timeout;
+    bool _enable_inactive_release;
+
+    EventLoop _baseloop;
+    Acceptor _acceptor;
+    LoopThreadPool _pool;
+    std::unordered_map<uint64_t, PtrConnection> _conns;
+
+    using ConnectedCb = std::function<void(const PtrConnection&)>;
+    using MessageCb = std::function<void(const PtrConnection&, Buffer*)>;
+    using CloseCb = std::function<void(const PtrConnection&)>;
+    using AnyEventCb = std::function<void(const PtrConnection&)>;
+    ConnectedCb _connected_cb;
+    MessageCb _msg_cb;
+    CloseCb _close_cb;
+    AnyEventCb _any_event_cb;
+private:
+    void NewConnection(int newfd)
+    {
+        _next_id++;
+        PtrConnection conn(new Connection(_next_id, newfd, _pool.NextLoop()));
+        conn->SetConnectedCb(_connected_cb);
+        conn->SetMessageCb(_msg_cb);
+        conn->SetCloseCb(_close_cb);
+        conn->SetAnyEventCb(_any_event_cb);
+        conn->SetServerCloseCb([this](const PtrConnection& c){RemoveConnection(c);});
+        if(_enable_inactive_release) conn->RegisterInactiveRelease(_timeout);
+        conn->Established();
+        _conns.insert({_next_id, conn});
+    }
+    void RemoveConnectionInLoop(const PtrConnection& conn)
+    {
+        int id = conn->Id();
+        auto it = _conns.find(id);
+        if(it != _conns.end())
+        {
+            _conns.erase(it);
+        }
+    }
+    void RemoveConnection(const PtrConnection& conn)
+    {
+        _baseloop.RunInLoop([this, conn](){RemoveConnectionInLoop(conn);});
+    }
+    void RunAfterInLoop(const Functor& func, int delay)
+    {
+        _next_id++;
+        _baseloop.AddTask(_next_id, delay, func);
+    }
+public:
+    TcpServer(uint64_t port)
+        :_port(port)
+        ,_next_id(0)
+        ,_enable_inactive_release(false)
+        ,_timeout(0)
+        ,_acceptor(port, &_baseloop)
+        ,_pool(&_baseloop)
+    {
+        _acceptor.SetAcceptCb([this](int newfd){NewConnection(newfd);});
+        _acceptor.StartListen();
+    }
+    void SetThreadCount(int cnt)
+    {
+        _pool.SetThreadCnt(cnt);
+    }
+    void SetConnectedCb(const ConnectedCb& cb) {_connected_cb = cb;}
+    void SetMessageCb(const MessageCb& cb) {_msg_cb = cb;}
+    void SetCloseCb(const CloseCb& cb) {_close_cb = cb;}
+    void SetAnyEventCb(const AnyEventCb& cb) {_any_event_cb = cb;}
+    void EnableInactiveRelease(int timeout)
+    {
+        _enable_inactive_release = true;
+        _timeout = timeout;
+    }
+    void RunAfter(const Functor& func, int delay)
+    {
+        _baseloop.RunInLoop([this, func, delay](){RunAfterInLoop(func, delay);});
+    }
+    void Start()
+    {
+        _pool.CreateLoops();
+        _baseloop.Start();
+    }
+};
+
 
 void Channel::Remove() {_loop->RemoveEvent(this);}
 void Channel::Update() {_loop->UpdateEvent(this);}
