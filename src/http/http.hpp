@@ -26,4 +26,26 @@ public:
         }
         return arry->size();
     }
+
+    static bool ReadFile(const std::string& filename, std::string* buf)
+    {
+        std::ifstream ifs(filename, std::ios::binary);
+        if(ifs.is_open() == false)
+        {
+            ERR_LOG("OPEN FILE %s FAIL!!!", filename.c_str());
+            return false;
+        }
+        size_t sz = 0;
+        ifs.seekg(0, ifs.end);
+        sz = ifs.tellg();
+        ifs.seekg(0, ifs.beg);
+        buf->resize(sz);
+        ifs.read(&(*buf)[0], sz);
+        if(ifs.good() == false)
+        {
+            ERR_LOG("READ FILE %s FAIL!!!", filename.c_str());
+            return false;
+        }
+        return true;
+    }
 };
