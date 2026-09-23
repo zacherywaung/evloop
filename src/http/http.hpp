@@ -1,4 +1,6 @@
+#pragma once
 #include "../server.hpp"
+#include <fstream>
 
 class Util
 {
@@ -26,7 +28,7 @@ public:
         }
         return arry->size();
     }
-
+    // read content from filename, fill buf
     static bool ReadFile(const std::string& filename, std::string* buf)
     {
         std::ifstream ifs(filename, std::ios::binary);
@@ -44,6 +46,23 @@ public:
         if(ifs.good() == false)
         {
             ERR_LOG("READ FILE %s FAIL!!!", filename.c_str());
+            return false;
+        }
+        return true;
+    }
+    // write content from src into filename
+    static bool WriteFile(const std::string& filename, const std::string& src)
+    {
+        std::ofstream ofs(filename, std::ios::binary | std::ios::trunc);
+        if(ofs.is_open() == false)
+        {
+            ERR_LOG("OPEN FILE %s FAIL!!!", filename.c_str());
+            return false;
+        }
+        ofs.write(src.c_str(), src.size());
+        if(ofs.good() == false)
+        {
+            ERR_LOG("Write FILE %s FAIL!!!", filename.c_str());
             return false;
         }
         return true;
