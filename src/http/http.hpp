@@ -67,4 +67,26 @@ public:
         }
         return true;
     }
+    // encode url, return result
+    static std::string UrlEncode(const std::string& url, bool space_to_plus)
+    {
+        std::string ret;
+        for(auto& c : url)
+        {
+            if(c == '.' || c == '-' || c == '_' || c == '~' || isalnum(c))
+            {
+                ret += c;
+            }
+            else if(c == ' ' && space_to_plus)
+            {
+                ret += '+';
+            }
+            else{
+                char tmp[4] = {0};
+                snprintf(tmp, 4, "%%%02X", c);
+                ret += tmp;
+            }
+        }
+        return ret;
+    }
 };
