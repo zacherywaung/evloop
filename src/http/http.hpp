@@ -195,3 +195,89 @@ public:
         return true;
     }
 };
+
+class HttpRequest
+{
+public:
+    std::string _method;
+    std::string _path;
+    std::string _version;
+    std::string _body;
+    std::smatch _matches;
+    std::unordered_map<std::string, std::string> _params;
+    std::unordered_map<std::string, std::string> _headers;
+public:
+    HttpRequest()
+        :_version("HTTP/1.1")
+    {}
+    void Reset()
+    {
+        _method.clear();
+        _path.clear();
+        _version = "HTTP/1.1";
+        _body.clear();
+        std::smatch tmp;
+        _matches.swap(tmp);
+        _params.clear();
+        _header.clear();
+    }
+    void SetHeader(const std::string& key, const std::string& val)
+    {
+        _headers.insert({key, val});
+    }
+    bool HasHeader(const std::string& key) const
+    {
+        auto it = _headers.find(key);
+        if(it == _headers.end())
+        {
+            return false;
+        }
+        return true;
+    }
+    std::string GetHeader(const std::string& key) const
+    {
+        auto it = _headers.find(key);
+        if(it == _headers.end())
+        {
+            return "";
+        }
+        return it->second;
+    }
+    void SetParam(const std::string& key, const std::string& val)
+    {
+        _params.insert({key, val});
+    }
+    bool HasParam(const std::string& key) const
+    {
+        auto it = _params.find(key);
+        if(it == _params.end())
+        {
+            return false;
+        }
+        return true;
+    }
+    std::string GetParam(const std::string& key) const
+    {
+        auto it = _params.find(key);
+        if(it == _params.end())
+        {
+            return "";
+        }
+        return it->second;
+    }
+    size_t ContentLength() const
+    {
+        if(HasHeader("Content-Length") == false) return 0;
+        std::string len = GetHeader("Content-Length");
+        return std::stol(len);
+    }
+    // check short link 
+    bool IsClose() const
+    {
+        if(HasHeader("Connection") && GetHeader("Connection") == "keep-alive")
+        {
+            return false;
+        }
+        return true;
+    }
+};
