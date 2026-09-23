@@ -89,4 +89,46 @@ public:
         }
         return ret;
     }
+    static int HexToDec(char c)
+    {
+        if(c >= '0' && c <= '9')
+        {
+            return c - '0';
+        }
+        if(c >= 'a' && c <= 'z')
+        {
+            return c - 'a' + 10;
+        }
+        if(c >= 'A' && c <= 'Z')
+        {
+            return c - 'A' + 10;
+        }
+        else return -1;
+    }
+    // decode url, return result
+    static std::string UrlDecode(const std::string& url, bool plus_to_space)
+    {
+        std::string ret;
+        for(int i = 0; i < url.size(); i++)
+        {
+            if(url[i] == '+' && plus_to_space)
+            {
+                ret += ' ';
+            }
+            else if(url[i] == '%')
+            {
+                int v1 = HexToDec(url[i + 1]);
+                int v2 = HexToDec(url[i + 2]);
+                if(v1 >= 0 && v2 >= 0)
+                {
+                    ret += static_cast<char>(v1 * 16 + v2);
+                    i += 2;
+                }
+            }
+            else{
+                ret += url[i];
+            }
+        }
+        return ret;
+    }
 };
