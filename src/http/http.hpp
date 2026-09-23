@@ -176,4 +176,22 @@ public:
         if(ret < 0) return false;
         return S_ISREG(st.st_mode);
     }
+    // check the path requested is valid (in / dir);
+    static bool ValidPath(const std::string& path)
+    {
+        std::vector<std::string> subdir;
+        Split(path, "/", &subdir);
+        int level = 0;
+        for(auto& e : subdir)
+        {
+            if(e == "..")
+            {
+                if(--level < 0) return false;
+            }
+            else{
+                level++;
+            }
+        }
+        return true;
+    }
 };
