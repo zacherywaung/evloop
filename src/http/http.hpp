@@ -1,5 +1,7 @@
 #pragma once
 #include "../server.hpp"
+#include "statu.hpp"
+#include "mime.hpp"
 #include <fstream>
 
 class Util
@@ -115,7 +117,7 @@ public:
             {
                 ret += ' ';
             }
-            else if(url[i] == '%')
+            else if(url[i] == '%' && i + 2 < url.size())
             {
                 int v1 = HexToDec(url[i + 1]);
                 int v2 = HexToDec(url[i + 2]);
@@ -130,5 +132,31 @@ public:
             }
         }
         return ret;
+    }
+    // describe a http status code
+    static std::string StatusDesc(int statu)
+    {
+        auto it = statu_msg.find(statu);
+        if(it != statu_msg.end())
+        {
+            return it->second;
+        }
+        return "Unknow"
+    }
+    // get media type from extend filename
+    static std::string ExtToMime(const std::string& filename)
+    {
+        size_t pos = filename.find_last_of('.');
+        if(pos == std::string::npos)
+        {
+            return "application/octet-stream";
+        }
+        std::string ext = filename.substr(pos);
+        auto it = mime_msg.find(ext);
+        if(it == mime_msg.end())
+        {
+            return "application/octet-stream";
+        }
+        return it->second;
     }
 };
