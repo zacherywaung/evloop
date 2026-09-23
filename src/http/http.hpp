@@ -3,6 +3,7 @@
 #include "statu.hpp"
 #include "mime.hpp"
 #include <fstream>
+#include <sys/stat.h>
 
 class Util
 {
@@ -141,7 +142,7 @@ public:
         {
             return it->second;
         }
-        return "Unknow"
+        return "Unknow";
     }
     // get media type from extend filename
     static std::string ExtToMime(const std::string& filename)
@@ -158,5 +159,21 @@ public:
             return "application/octet-stream";
         }
         return it->second;
+    }
+    // check a file is directory
+    static bool IsDirectory(const std::string& filename)
+    {
+        struct stat st;
+        int ret = stat(filename.c_str(), &st);
+        if(ret < 0) return false;
+        return S_ISDIR(st.st_mode);
+    }
+    // check a file is regular file
+    static bool IsRegular(const std::string& filename)
+    {
+        struct stat st;
+        int ret = stat(filename.c_str(), &st);
+        if(ret < 0) return false;
+        return S_ISREG(st.st_mode);
     }
 };
