@@ -354,7 +354,7 @@ public:
 
 enum class RecvStatu
 {
-    ERR,
+    ERROR,
     LINE,
     HEAD,
     BODY,
@@ -378,6 +378,7 @@ private:
             // check length security
             if(buf->ReadableSize() > MAX_LINE)
             {
+                _recv_stat = RecvStatu::ERROR;
                 _resp_code = 414; // URI Too Long
                 return false;
             }
@@ -386,6 +387,7 @@ private:
         // check length security
         if(line.size() > MAX_LINE)
         {
+            _recv_stat = RecvStatu::ERROR;
             _resp_code = 414; // URI Too Long
             return false;
         }
@@ -412,7 +414,7 @@ private:
         bool ret = std::regex_match(line, matches, e);
         if(ret == false)
         {
-            _recv_stat = RecvStatu::ERR;
+            _recv_stat = RecvStatu::ERROR;
             _resp_code = 400; //Bad Request
             return false;
         }
@@ -427,7 +429,7 @@ private:
             size_t pos = kv.find('=');
             if(pos == std::string::npos)
             {
-                _recv_stat = RecvStatu::ERR;
+                _recv_stat = RecvStatu::ERROR;
                 _resp_code = 400; //Bad Request
                 return false;
             }
@@ -435,6 +437,54 @@ private:
             std::string val = Util::UrlDecode(kv.substr(pos + 1), true);
             _req.SetParam(key, val);
         }
+        return true;
+    }
+    bool RecvHead(Buffer* buf)
+    {
+        if(_recv_stat != RecvStatu::HEAD) return false;
+        // key: val\r\nkey: val\r\n
+        while(1)
+        {
+            std::string line = buf->GetLineAndMove();
+            if(line.size() == 0)
+            {
+                if(buf->ReadableSize() > MAX_LINE)
+                {
+                    _recv_stat = RecvStatu::ERROR;
+                    _resp_code = 414; // URI Too Long
+                    return false;
+                }
+                return true;
+            }
+            if(line.size() > MAX_LINE)
+            {
+                _recv_stat = RecvStatu::ERROR;
+                _resp_code = 414; // URI Too Long
+                return false;
+            }
+            if(line == "\n" || line == "\r\n")
+            {
+                break;
+            }
+            if(ParseHead(line) == false) return false;
+        }
+        _recv_stat = RecvStatu::BODY;
+        return true;
+    }
+    bool ParseHead(std::string& line)
+    {
+        if(line.back() == '\n') line.pop_back();
+        if(line.back() == '\r') line.pop_back();
+        size_t pos = line.find(": ");
+        if(pos = std::string::npos)
+        {
+            _recv_stat = RecvStatu::ERROR;
+            _resp_code = 400; // Bad Request
+            return false;
+        }
+        std::string key = line.substr(0, pos);
+        std::string val = line.substr(pos + 2);
+        _req.SetHeader(key, val);
         return true;
     }
 
