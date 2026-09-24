@@ -3,6 +3,7 @@
 #include "statu.hpp"
 #include "mime.hpp"
 #include <fstream>
+#include <regex>
 #include <sys/stat.h>
 
 class Util
@@ -270,6 +271,75 @@ public:
         if(HasHeader("Content-Length") == false) return 0;
         std::string len = GetHeader("Content-Length");
         return std::stol(len);
+    }
+    // check short link 
+    bool IsClose() const
+    {
+        if(HasHeader("Connection") && GetHeader("Connection") == "keep-alive")
+        {
+            return false;
+        }
+        return true;
+    }
+};
+
+class HttpResponse
+{
+public:
+    int _stat_code;
+    std::string _body;
+    unordered_map<std::string, std::string> _headers;
+    bool _redirect;
+    std::string _redirect_url;
+public:
+    HttpResponse()
+        :_stat_code(200)
+        ,_redirect(false)
+    {}
+    HttpResponse(int stat_code)
+        :_stat_code(stat_code)
+        ,_redirect(false)
+    {}
+    void Reset()
+    {
+        _stat_code = 200;
+        _body.clear();
+        _headers.clear();
+        _redirect = false;
+        _redirect_url.clear();
+    }
+    void SetHeader(const std::string& key, const std::string& val)
+    {
+        _headers.insert({key, val});
+    }
+    bool HasHeader(const std::string& key) const
+    {
+        auto it = _headers.find(key);
+        if(it == _headers.end())
+        {
+            return false;
+        }
+        return true;
+    }
+    std::string GetHeader(const std::string& key) const
+    {
+        auto it = _headers.find(key);
+        if(it == _headers.end())
+        {
+            return "";
+        }
+        return it->second;
+    }
+    void SetContent(const std::string& body, const std::string& type)
+    {
+        _body = body;
+        SetHeader("Content-Type", type);
+    }
+    void SetRedirect(const std::string& redirect_url, int stat_code = 302)
+    {
+        _redirect_url = redirect_url;
+        _redirect = true;
+        _stat_code = stat_code;
     }
     // check short link 
     bool IsClose() const
