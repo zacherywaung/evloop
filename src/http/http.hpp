@@ -351,3 +351,102 @@ public:
         return true;
     }
 };
+
+enum class RecvStatu
+{
+    ERR,
+    LINE,
+    HEAD,
+    BODY,
+    OVER
+};
+
+#define MAX_LINE 8192
+class HttpContext
+{
+private:
+    RecvStatu _recv_stat;
+    int _resp_code;
+    HttpRequest _req;
+private:
+    bool RecvLine(Buffer* buf)
+    {
+        if(_recv_stat != RecvStatu::LINE) return false;
+        std::string line = buf->GetLineAndMove();
+        if(line.size() == 0) // not found \r\n
+        {
+            // check length security
+            if(buf->ReadableSize() > MAX_LINE)
+            {
+                _resp_code = 414; // URI Too Long
+                return false;
+            }
+            return true; // continue for receiving line
+        }
+        // check length security
+        if(line.size() > MAX_LINE)
+        {
+            _resp_code = 414; // URI Too Long
+            return false;
+        }
+        if(ParseLine(line) == false) return false;
+        // success, move to next statu
+        _recv_stat = RecvStatu::HEAD;
+        return true;
+    }
+
+    // POST /api/login?from=home&username=alice HTTP/1.1
+    bool ParseLine(const std::string& line)
+    {
+        std::smatch matches;
+        static const std::regex e(
+            "(GET|HEAD|POST|PUT|DELETE)"    // 1.method
+            " "                             
+            "([^?]*)"                       // 2.path
+            "(?:\\?(.*))?"                  // 3.query
+            " "
+            "(HTTP/1\\.[01])"               // 4.version
+            "(?:\n|\r\n)?",
+            std::regex::icase
+        );
+        bool ret = std::regex_match(line, matches, e);
+        if(ret == false)
+        {
+            _recv_stat = RecvStatu::ERR;
+            _resp_code = 400; //Bad Request
+            return false;
+        }
+        _req._method = matches[1];                          // 1.method
+        _req._path = Util::UrlDecode(matches[2], false);    // 2.path
+        _req._version = matches[4];                         // 4.version
+        std::string query_string = matches[3];              // 3.query->request_params
+        std::vector<std::string> query_string_arry;
+        Util::Split(query_string, "&", &query_string_arry);
+        for(auto& kv : query_string_arry)
+        {
+            size_t pos = kv.find('=');
+            if(pos == std::string::npos)
+            {
+                _recv_stat = RecvStatu::ERR;
+                _resp_code = 400; //Bad Request
+                return false;
+            }
+            std::string key = Util::UrlDecode(kv.substr(0, pos), true);
+            std::string val = Util::UrlDecode(kv.substr(pos + 1), true);
+            _req.SetParam(key, val);
+        }
+        return true;
+    }
+
+public:
+    HttpContext()
+        :_recv_stat(RecvStatu::LINE)
+        ,_resp_code(200)
+    {}
+    void Reset()
+    {
+        _recv_stat = RecvStatu::LINE;
+        _resp_code = 200;
+        _req.Reset();
+    }
+};
