@@ -220,7 +220,7 @@ public:
         std::smatch tmp;
         _matches.swap(tmp);
         _params.clear();
-        _header.clear();
+        _headers.clear();
     }
     void SetHeader(const std::string& key, const std::string& val)
     {
@@ -288,7 +288,7 @@ class HttpResponse
 public:
     int _stat_code;
     std::string _body;
-    unordered_map<std::string, std::string> _headers;
+    std::unordered_map<std::string, std::string> _headers;
     bool _redirect;
     std::string _redirect_url;
 public:
@@ -487,7 +487,27 @@ private:
         _req.SetHeader(key, val);
         return true;
     }
-
+    bool RecvBody(Buffer* buf)
+    {
+        if(_recv_stat != RecvStatu::BODY) return false;
+        size_t content_length = _req.ContentLength();
+        if(content_length == 0)
+        {
+            _recv_stat = RecvStatu::OVER;
+            return true;
+        }
+        size_t realsize = content_length - _req._body.size();
+        if(buf->ReadableSize() >= realsize)
+        {
+            _req._body.append(buf->ReadPos(), realsize);
+            _recv_stat = RecvStatu::OVER;
+            buf->MoveRead(realsize);
+            return true;
+        }
+        _req._body.append(buf->ReadPos(), buf->ReadableSize());
+        buf->MoveRead(buf->ReadableSize());
+        return true;
+    }
 public:
     HttpContext()
         :_recv_stat(RecvStatu::LINE)
@@ -498,5 +518,27 @@ public:
         _recv_stat = RecvStatu::LINE;
         _resp_code = 200;
         _req.Reset();
+    }
+    RecvStatu GetStatu()
+    {
+        return _recv_stat;
+    }
+    void RecvHttpRequest(Buffer* buf)
+    {
+        switch(_recv_stat)
+        {
+        case RecvStatu::LINE:
+            RecvLine(buf);
+            [[fallthrough]];
+        case RecvStatu::HEAD:
+            RecvHead(buf);
+            [[fallthrough]];
+        case RecvStatu::BODY:
+            RecvBody(buf);
+            break;
+        default:
+            break;
+        }
+        return;
     }
 };
