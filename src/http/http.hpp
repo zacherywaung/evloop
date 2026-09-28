@@ -480,7 +480,7 @@ private:
         if(line.back() == '\n') line.pop_back();
         if(line.back() == '\r') line.pop_back();
         size_t pos = line.find(": ");
-        if(pos = std::string::npos)
+        if(pos == std::string::npos)
         {
             _recv_stat = RecvStatu::ERROR;
             _resp_code = 400; // Bad Request
@@ -698,7 +698,7 @@ private:
         {
             return FileHandler(req, resp);
         }
-        if(req._method == "GET" || req._method == "Head")
+        if(req._method == "GET" || req._method == "HEAD")
         {
             return Dispatcher(req, resp, _get_route);
         }

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:#0f1115;color:#e6e6e6;
+font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.card{padding:48px 64px;text-align:center}
+.title{font-size:32px;font-weight:600;letter-spacing:-1px;color:#5b8def}
+.rule{width:48px;height:2px;background:#2a2f3a;margin:28px auto}
+input[type=text],input[type=password]{
+width:280px;padding:12px 14px;margin-bottom:14px;
+background:#161920;border:1px solid #2a2f3a;border-radius:6px;
+color:#e6e6e6;font-family:inherit;font-size:15px;outline:none}
+input[type=text]:focus,input[type=password]:focus{border-color:#5b8def}
+input[type=text]::placeholder,input[type=password]::placeholder{color:#5c6470}
+input[type=submit]{
+width:280px;padding:12px;margin-top:6px;
+background:#5b8def;border:none;border-radius:6px;
+color:#0f1115;font-family:inherit;font-size:15px;font-weight:600;
+cursor:pointer}
+input[type=submit]:hover{background:#6f9bf2}
+.foot{margin-top:28px;font-size:13px;color:#5c6470}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="title">Login</div>
+<div class="rule"></div>
+<form action="/login" method="post">
+<input type="text" name="username" placeholder="username"><br>
+<input type="password" name="password" placeholder="password"><br>
+<input type="submit" value="Sign in">
+</form>
+<div class="foot">evloop</div>
+</div>
+</body>
+</html>
