@@ -6,6 +6,8 @@
 #include <regex>
 #include <sys/stat.h>
 
+#define DEFAULT_TIMEOUT 30
+
 class Util
 {
 public:
@@ -419,6 +421,8 @@ private:
             return false;
         }
         _req._method = matches[1];                          // 1.method
+        // transform method to uppercase letter
+        std::transform(_req._method.begin(), _req._method.end(), _req._method.begin(), ::toupper);
         _req._path = Util::UrlDecode(matches[2], false);    // 2.path
         _req._version = matches[4];                         // 4.version
         std::string query_string = matches[3];              // 3.query->request_params
@@ -523,6 +527,14 @@ public:
     {
         return _recv_stat;
     }
+    HttpRequest& GetRequest()
+    {
+        return _req;
+    }
+    int GetResponseCode()
+    {
+        return _resp_code;
+    }
     void RecvHttpRequest(Buffer* buf)
     {
         switch(_recv_stat)
@@ -540,5 +552,260 @@ public:
             break;
         }
         return;
+    }
+};
+
+class HttpServer
+{
+private:
+    using Handler = std::function<void(const HttpRequest&, HttpResponse*)>;
+    using Handlers = std::vector<std::pair<std::regex, Handler>>;
+
+    Handlers _get_route;
+    Handlers _post_route;
+    Handlers _put_route;
+    Handlers _delete_route;
+    std::string _basedir;
+    TcpServer _tcpserver;
+private:
+    void OnConnected(const PtrConnection& conn)
+    {
+        conn->SetContext(HttpContext());
+        DEBUG_LOG("New Connection %p", conn.get());
+    }
+    void OnMessage(const PtrConnection& conn, Buffer* buf)
+    {   while(buf->ReadableSize() > 0)
+        {
+            HttpContext* context = std::any_cast<HttpContext>(conn->GetContext());
+            if(context == nullptr)
+            {
+                ERR_LOG("CONTEXT NOT SET!!!");
+                conn->ShutDown();
+                return;
+            }
+            context->RecvHttpRequest(buf);
+            HttpRequest& req = context->GetRequest();
+            HttpResponse resp(context->GetResponseCode());
+            if(context->GetResponseCode() >= 400) // parse failure
+            {
+                ErrorHandler(req, &resp);
+                WriteResponse(conn, req, resp);     // send failure response
+                context->Reset();                   // reset context from connection
+                buf->MoveRead(buf->ReadableSize()); // clear in_buffer from connection
+                conn->ShutDown();                   // shutdown connection
+                return;
+            }
+            if(context->GetStatu() != RecvStatu::OVER)  // recv request not complete
+            {
+                return;
+            }
+            // recv request succeed
+            Route(req, &resp);
+            WriteResponse(conn, req, resp);
+            context->Reset();
+            if(resp.IsClose())
+            {
+                conn->ShutDown();
+            }
+        }
+        return;
+    }
+    void ErrorHandler(const HttpRequest& req, HttpResponse* resp)
+    {
+        std::string body;
+        body += "<!DOCTYPE html>";
+        body += "<html lang='en'>";
+        body += "<head>";
+        body += "<meta charset='utf-8'>";
+        body += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+        body += "<title>";
+        body += std::to_string(resp->_stat_code);                 // response code
+        body += "</title>";
+        body += "<style>";
+        body += "*{margin:0;padding:0;box-sizing:border-box}";
+        body += "body{min-height:100vh;display:flex;align-items:center;justify-content:center;";
+        body += "background:#0f1115;color:#e6e6e6;";
+        body += "font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}";
+        body += ".card{text-align:center;padding:48px 64px}";
+        body += ".code{font-size:96px;font-weight:600;letter-spacing:-2px;color:#5b8def;line-height:1}";
+        body += ".desc{margin-top:12px;font-size:20px;color:#9aa4b2}";
+        body += ".rule{width:48px;height:2px;background:#2a2f3a;margin:28px auto}";
+        body += ".foot{font-size:13px;color:#5c6470}";
+        body += "</style>";
+        body += "</head>";
+        body += "<body>";
+        body += "<div class='card'>";
+
+        body += "<div class='code'>";
+        body += std::to_string(resp->_stat_code);                 // response code
+        body += "</div>";
+
+        body += "<div class='desc'>";
+        body += Util::StatusDesc(resp->_stat_code);                // code description
+        body += "</div>";
+
+        body += "<div class='rule'></div>";
+        body += "<div class='foot'>evloop</div>";
+
+        body += "</div>";
+        body += "</body>";
+        body += "</html>";
+
+        resp->SetContent(body, "text/html; charset=utf-8");
+    }
+    void WriteResponse(const PtrConnection& conn, const HttpRequest& req, HttpResponse& resp)
+    {
+        // fill response head
+        // 1. Connection
+        if(req.IsClose() == true)
+        {
+            resp.SetHeader("Connection", "close");
+        }
+        else{
+            resp.SetHeader("Connection", "keep-alive");
+        }
+        // 2. Contenct-Length
+        if(resp._body.empty() == false && resp.HasHeader("Content-Length") == false)
+        {
+            resp.SetHeader("Content-Length", std::to_string(resp._body.size()));
+        }
+        // 3. Content-Type
+        if(resp._body.empty() == false && resp.HasHeader("Content-Type") == false)
+        {
+            resp.SetHeader("Content-Type", "application/octet-stream");
+        }
+        // 4. Location
+        if(resp._redirect == true)
+        {
+            resp.SetHeader("Location", resp._redirect_url);
+        }
+        // serialize
+        std::stringstream resp_str;
+        resp_str << req._version << " " << std::to_string(resp._stat_code)
+        << " " << Util::StatusDesc(resp._stat_code) << "\r\n";
+        for(auto& [k, v] : resp._headers)
+        {
+            resp_str << k << ": " << v << "\r\n";
+        }
+        resp_str << "\r\n";
+        resp_str << resp._body;
+        // send via connection
+        conn->Send(resp_str.str().c_str(), resp_str.str().size());
+    }
+    void Route(HttpRequest& req, HttpResponse* resp)
+    {
+        if(IsFileHandler(req))
+        {
+            return FileHandler(req, resp);
+        }
+        if(req._method == "GET" || req._method == "Head")
+        {
+            return Dispatcher(req, resp, _get_route);
+        }
+        else if(req._method == "POST")
+        {
+            return Dispatcher(req, resp, _post_route);
+        }
+        else if(req._method == "PUT")
+        {
+            return Dispatcher(req, resp, _put_route);
+        }
+        else if(req._method == "DELETE")
+        {
+            return Dispatcher(req, resp, _delete_route);
+        }
+        resp->_stat_code = 405; // method not allowed
+        return;
+    }
+
+    void Dispatcher(HttpRequest& req, HttpResponse* resp, const Handlers& handlers)
+    {
+        for(auto& [re, func] : handlers)
+        {
+            bool ret = std::regex_match(req._path, req._matches, re);
+            if(ret == false) continue;
+            return func(req, resp);
+        }
+        resp->_stat_code = 404;
+        return;
+    }
+    // check if request static resources
+    bool IsFileHandler(const HttpRequest& req)
+    {
+        // basedir exist
+        if(_basedir.empty()) return false;
+        // request method == get or head
+        if(req._method != "GET" && req._method != "HEAD") return false;
+        // request path valid in /
+        if(Util::ValidPath(req._path) == false) return false;
+        // request path regular file
+        std::string req_path = _basedir + req._path;
+        if(req._path.back() == '/')
+        {
+            req_path += "index.html";
+        }
+        return Util::IsRegular(req_path);
+    }
+    // fetch static resources
+    void FileHandler(const HttpRequest& req, HttpResponse* resp)
+    {
+        std::string req_path = _basedir + req._path;
+        if(req._path.back() == '/')
+        {
+            req_path += "index.html";
+        }
+        bool ret = Util::ReadFile(req_path, &(resp->_body));
+        if(ret == false)
+        {
+            return;
+        }
+        std::string media_type = Util::ExtToMime(req_path);
+        resp->SetHeader("Content-Type", media_type);
+        return;
+    }
+
+public:
+    // tcpserver::
+    // void SetConnectedCb(const ConnectedCb& cb) {_connected_cb = cb;}
+    // void SetMessageCb(const MessageCb& cb) {_msg_cb = cb;}
+    // void EnableInactiveRelease(int timeout)
+    // httpserver::
+    // void OnConnected(const PtrConnection& conn)
+    // void OnMessage(const PtrConnection& conn, Buffer* buf)
+    HttpServer(int port, int timeout = DEFAULT_TIMEOUT)
+        :_tcpserver(port)
+    {
+        _tcpserver.EnableInactiveRelease(timeout);
+        _tcpserver.SetConnectedCb([this](const PtrConnection& conn){OnConnected(conn);});
+        _tcpserver.SetMessageCb([this](const PtrConnection& conn, Buffer* buf){OnMessage(conn, buf);});
+    }
+    void SetBaseDir(const std::string& path)
+    {
+        assert(Util::IsDirectory(path));
+        _basedir = path;
+    }
+    void Get(const std::string& pattern, const Handler& handler)
+    {
+        _get_route.push_back({std::regex(pattern), handler});
+    }
+    void Post(const std::string& pattern, const Handler& handler)
+    {
+        _post_route.push_back({std::regex(pattern), handler});
+    }
+    void Put(const std::string& pattern, const Handler& handler)
+    {
+        _put_route.push_back({std::regex(pattern), handler});
+    }
+    void Delete(const std::string& pattern, const Handler& handler)
+    {
+        _delete_route.push_back({std::regex(pattern), handler});
+    }
+    void SetThreadCount(int cnt)
+    {
+        _tcpserver.SetThreadCount(cnt);
+    }
+    void Listen()
+    {
+        _tcpserver.Start();
     }
 };
