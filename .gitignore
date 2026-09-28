@@ -76,6 +76,7 @@ timerwheel
 main
 cli
 svr
+client1
 
 # test tools
 WebBench-master/

@@ -6,7 +6,7 @@
 #include <regex>
 #include <sys/stat.h>
 
-#define DEFAULT_TIMEOUT 30
+#define DEFAULT_TIMEOUT 10
 
 class Util
 {
