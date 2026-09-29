@@ -5,7 +5,7 @@
 #define INFO 0
 #define DEBUG 1
 #define ERR 2
-#define DEFAULT_LOG_LEVEL DEBUG
+#define DEFAULT_LOG_LEVEL ERR
 
 #define LOG(level, format, ...) do{\
     if(level < DEFAULT_LOG_LEVEL) break;\

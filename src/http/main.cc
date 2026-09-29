@@ -1,4 +1,5 @@
 #include "http.hpp"
+#include <cstdlib>
 #include <iostream>
 
 #define WWWROOT "./wwwroot/"
@@ -45,11 +46,15 @@ void DelFile(const HttpRequest& req, HttpResponse* resp)
     resp->SetContent(RequestStr(req), "text/plain");
 }
 
-int main()
+int main(int argc, char* argv[])
 {
+    int threads = (argc > 1) ? std::atoi(argv[1]) : 3;
     HttpServer svr(8080);
     svr.SetBaseDir(WWWROOT);
-    svr.SetThreadCount(3);
+    svr.SetThreadCount(threads);
+
+    svr.Get("/bench", [](const HttpRequest&, HttpResponse* resp){resp->SetContent("ok", "text/plain");});
+
     svr.Get("/hello", Hello);
     svr.Post("/login", Login);
     svr.Put("/1234.txt", PutFile);

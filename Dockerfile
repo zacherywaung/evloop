@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     gdb \
     telnet \
     net-tools \
+    exuberant-ctags \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
