@@ -607,7 +607,7 @@ private:
         timerfd_settime(timerfd, 0, &itime, nullptr);
         return timerfd;
     }
-    void ReadTimeFd()
+    int ReadTimeFd()
     {
         uint64_t times;
         int ret = read(_timerfd, &times, sizeof(times));
@@ -616,11 +616,15 @@ private:
             ERR_LOG("READTIMEFD FAIL!!!");
             abort();
         }
+        return ret;
     }
     void Ontime()
     {
-        ReadTimeFd();
-        Run();
+        int times = ReadTimeFd();
+        for(int i = 0; i < times; i++)
+        {
+            Run();
+        }
     }
 public:
     TimerWheel(EventLoop* loop)
