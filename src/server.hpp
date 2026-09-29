@@ -616,7 +616,7 @@ private:
             ERR_LOG("READTIMEFD FAIL!!!");
             abort();
         }
-        return ret;
+        return times;
     }
     void Ontime()
     {
@@ -937,9 +937,10 @@ private:
         // (TO OPTIMIZE)current version: we are unsure size of input, so we use a temporary buffer store data
         // to avoid increase too much extra space in inbuffer
         char buffer[65536] = {0};
-        ssize_t ret = _socket.RecvNonBlock(&buffer, 65535);
+        ssize_t ret = _socket.RecvNonBlock(buffer, 65535);
         if(ret == -2) return HandleClose(); // peer close
         if(ret < 0) return ShutDownInLoop();
+        if (ret == 0) return;
         // 2. callback msgcb
         _in_buffer.WriteAndMove(&buffer, ret);
         if(_in_buffer.ReadableSize() > 0)
@@ -1001,6 +1002,7 @@ private:
     }
     void ReleaseInLoop()
     {
+        // DEBUG_LOG("ReleaseInLoop: stat=%d, in=%zu, out=%zu", (int)_stat, _in_buffer.ReadableSize(), _out_buffer.ReadableSize());
         // 1. change status
         _stat = ConnStatus::DISCONNECTED;
         // 2. remove event monitor
