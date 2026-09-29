@@ -31,7 +31,14 @@ void Login(const HttpRequest& req, HttpResponse* resp)
 }
 void PutFile(const HttpRequest& req, HttpResponse* resp)
 {
-    resp->SetContent(RequestStr(req), "text/plain");
+    if(Util::ValidPath(req._path) == false)
+    {
+        resp->_stat_code = 403; // forbidden
+        return;
+    }
+    std::string path = WWWROOT + req._path;
+    if(Util::WriteFile(path, req._body) == false) resp->_stat_code = 500;
+    return;
 }
 void DelFile(const HttpRequest& req, HttpResponse* resp)
 {
